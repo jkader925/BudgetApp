@@ -229,9 +229,47 @@ def apply_loaded_payload(raw: str):
     import copy
     try:
         data = json.loads(raw)
-        st.session_state.income          = {**DEFAULT_INCOME,  **data.get("rates", {})}
-        st.session_state.expenses        = {**copy.deepcopy(DEFAULT_EXPENSES), **data.get("expenses", {})}
-        st.session_state.custom_services = data.get("custom_services", {})
+
+        # ── Income / rate fields ──────────────────────────────────────────
+        rates = data.get("rates", {})
+        merged_income = {**DEFAULT_INCOME, **rates}
+        st.session_state.income = merged_income
+
+        # Write directly into each widget's session-state key so the
+        # number_input widgets actually reflect the new values on rerun.
+        int_income_keys = {"years"}
+        for k, v in merged_income.items():
+            try:
+                st.session_state[k] = int(float(v)) if k in int_income_keys else float(v)
+            except (ValueError, TypeError):
+                pass
+
+        # ── Expense fields ────────────────────────────────────────────────
+        saved_exp = data.get("expenses", {})
+        merged_exp = copy.deepcopy(DEFAULT_EXPENSES)
+        for cat in merged_exp:
+            if cat in saved_exp:
+                merged_exp[cat].update(saved_exp[cat])
+        st.session_state.expenses = merged_exp
+
+        for cat, items in merged_exp.items():
+            for item, v in items.items():
+                widget_key = f"{cat}__{item}"
+                try:
+                    st.session_state[widget_key] = float(v)
+                except (ValueError, TypeError):
+                    st.session_state[widget_key] = 0.0
+
+        # ── Custom services ───────────────────────────────────────────────
+        custom = data.get("custom_services", {})
+        st.session_state.custom_services = custom
+        for svc_name, v in custom.items():
+            widget_key = f"custom__{svc_name}"
+            try:
+                st.session_state[widget_key] = float(v)
+            except (ValueError, TypeError):
+                st.session_state[widget_key] = 0.0
+
         st.success("✅ Profile loaded successfully!")
     except Exception as e:
         st.error(f"Could not parse file: {e}")
@@ -266,12 +304,15 @@ def expense_section(category: str, title: str):
     for i in range(0, len(keys), 2):
         cols = st.columns(2)
         for j, key in enumerate(keys[i : i + 2]):
+            widget_key = f"{category}__{key}"
             with cols[j]:
-                val = cols[j].number_input(
+                # Use widget key as source of truth so loaded values appear correctly
+                stored = st.session_state.get(widget_key, items[key])
+                val = st.number_input(
                     key,
                     min_value=0.0, step=1.0,
-                    value=float(items[key] or 0),
-                    key=f"{category}__{key}",
+                    value=float(stored or 0),
+                    key=widget_key,
                     label_visibility="visible",
                 )
                 st.session_state.expenses[category][key] = str(val)
