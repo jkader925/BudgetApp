@@ -81,12 +81,14 @@ DEFAULT_INCOME = {
 
 # Savings account defaults (separate from income dict for clarity)
 DEFAULT_SAVINGS = {
-    "my_sav_mode":        "% of my gross",   # input mode
-    "my_sav_value":       10.0,              # amount in chosen mode
-    "my_sav_yield":       3.3,               # annual yield %
-    "spouse_sav_mode":    "% of my gross",
-    "spouse_sav_value":   10.0,
-    "spouse_sav_yield":   3.3,
+    "my_sav_mode":         "% of my gross",  # input mode
+    "my_sav_dollar":       500.0,            # monthly $ contribution
+    "my_sav_pct":          10.0,             # % contribution
+    "my_sav_yield":        3.3,              # annual yield %
+    "spouse_sav_mode":     "% of my gross",
+    "spouse_sav_dollar":   500.0,
+    "spouse_sav_pct":      10.0,
+    "spouse_sav_yield":    3.3,
 }
 
 SAV_MODES = ["$ amount", "% of my gross", "% of combined gross"]
@@ -168,6 +170,7 @@ def apply_load(raw: str):
                 v = float(raw_val)
             except (ValueError, TypeError):
                 v = default
+        # Write directly into widget key — no index= or value= will override this
         st.session_state[sav_key(k)] = v
 
     saved_exp = data.get("expenses", {})
@@ -208,17 +211,18 @@ def build_save_payload() -> str:
 def resolve_sav_deposit(who: str, my_gross_monthly: float,
                          spouse_gross_monthly: float) -> float:
     """Return monthly savings deposit in $ for 'my' or 'spouse'."""
-    mode  = st.session_state.get(sav_key(f"{who}_sav_mode"),  "% of my gross")
-    value = float(st.session_state.get(sav_key(f"{who}_sav_value"), 0) or 0)
+    mode     = st.session_state.get(sav_key(f"{who}_sav_mode"), "% of my gross")
+    dollar   = float(st.session_state.get(sav_key(f"{who}_sav_dollar"), 0) or 0)
+    pct      = float(st.session_state.get(sav_key(f"{who}_sav_pct"),    0) or 0)
     combined_monthly = my_gross_monthly + spouse_gross_monthly
     own_monthly = my_gross_monthly if who == "my" else spouse_gross_monthly
 
     if mode == "$ amount":
-        return value
+        return dollar
     elif mode == "% of my gross":
-        return own_monthly * (value / 100)
+        return own_monthly * (pct / 100)
     else:  # % of combined gross
-        return combined_monthly * (value / 100)
+        return combined_monthly * (pct / 100)
 
 # ─────────────────────────────────────────────
 # CALCULATION ENGINE
@@ -533,20 +537,19 @@ def savings_input_block(who: str, label: str):
     """Render the savings account input block for one person."""
     st.markdown(f'<div class="sub-header">💰 {label}</div>', unsafe_allow_html=True)
 
-    mode_key  = sav_key(f"{who}_sav_mode")
-    val_key   = sav_key(f"{who}_sav_value")
-    yield_key = sav_key(f"{who}_sav_yield")
-
-    current_mode = st.session_state.get(mode_key, "% of my gross")
-    mode_idx = SAV_MODES.index(current_mode) if current_mode in SAV_MODES else 1
+    mode_key    = sav_key(f"{who}_sav_mode")
+    dollar_key  = sav_key(f"{who}_sav_dollar")
+    pct_key     = sav_key(f"{who}_sav_pct")
+    yield_key   = sav_key(f"{who}_sav_yield")
 
     col_mode, col_val, col_yield = st.columns([2, 1.5, 1.5])
 
     with col_mode:
+        # No index= — widget key is the sole source of truth.
+        # Bootstrap ensures the key exists before this renders.
         st.radio(
             "Contribution input as",
             options=SAV_MODES,
-            index=mode_idx,
             key=mode_key,
             horizontal=True,
             label_visibility="visible",
@@ -555,12 +558,14 @@ def savings_input_block(who: str, label: str):
     selected_mode = st.session_state.get(mode_key, "% of my gross")
 
     with col_val:
+        # Each mode has its OWN key so Streamlit never sees a constraint conflict
+        # when the user toggles between $ and %. Values are preserved independently.
         if selected_mode == "$ amount":
             st.number_input("Monthly Contribution ($)",
-                            min_value=0.0, step=50.0, key=val_key)
+                            min_value=0.0, step=50.0, key=dollar_key)
         else:
             st.number_input("Contribution (%)",
-                            min_value=0.0, max_value=100.0, step=0.5, key=val_key)
+                            min_value=0.0, max_value=100.0, step=0.5, key=pct_key)
 
     with col_yield:
         st.number_input("Annual Yield (%)",
