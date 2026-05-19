@@ -7,12 +7,11 @@ import json
 # PAGE CONFIG
 # ─────────────────────────────────────────────
 st.set_page_config(
-    page_title="Interactive Budgeting & APY Tool",
+    page_title="Interactive Budget Tool",
     page_icon="📊",
     layout="wide",
 )
 
-APY_RATE = 0.033        # 3.3% savings APY
 IRS_401K_LIMIT = 23500  # per person 2025
 
 # ─────────────────────────────────────────────
@@ -27,20 +26,27 @@ st.markdown("""
         font-size: 1rem; font-weight: 700; margin-bottom: 0.4rem;
         letter-spacing: 0.02em;
     }
+    .sub-header {
+        background: #e8eaf6; color: #283593;
+        padding: 0.3rem 0.7rem; border-radius: 5px;
+        font-size: 0.88rem; font-weight: 700; margin-bottom: 0.3rem;
+    }
     .result-card {
         background: #f8f9fa; border-left: 4px solid #4CAF50;
         border-radius: 6px; padding: 0.6rem 1rem; margin-bottom: 0.5rem;
     }
-    .result-card-red  { border-left-color: #e74c3c !important; }
-    .result-card-blue { border-left-color: #2b579a !important; }
-    .result-card-gray { border-left-color: #888 !important; }
+    .result-card-red    { border-left-color: #e74c3c !important; }
+    .result-card-blue   { border-left-color: #2b579a !important; }
+    .result-card-gray   { border-left-color: #888 !important; }
     .result-card-orange { border-left-color: #e67e22 !important; }
+    .result-card-teal   { border-left-color: #00897b !important; }
     .result-label { font-size: 0.82rem; color: #555; margin: 0; }
     .result-value { font-size: 1.25rem; font-weight: 800; margin: 0; }
     .result-value-green  { color: #27ae60; }
     .result-value-red    { color: #e74c3c; }
     .result-value-blue   { color: #2b579a; }
     .result-value-orange { color: #e67e22; }
+    .result-value-teal   { color: #00897b; }
     .result-value-dark   { color: #222; }
     .tax-card {
         background: #fcfcfc; border: 1px solid #e0e0e0;
@@ -51,9 +57,12 @@ st.markdown("""
     .tax-label { color: #666; }
     .tax-value { font-weight: 700; color: #333; }
     .thin-divider { border-top: 1px solid #ddd; margin: 0.6rem 0; }
-    /* tighten tab bar */
     .stTabs [data-baseweb="tab-list"] { gap: 4px; }
     .stTabs [data-baseweb="tab"] { padding: 6px 14px; font-size: 0.85rem; }
+    /* make radio look like a toggle strip */
+    div[data-testid="stHorizontalBlock"] .stRadio > div {
+        flex-direction: row; gap: 6px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -61,12 +70,26 @@ st.markdown("""
 # DEFAULTS
 # ─────────────────────────────────────────────
 DEFAULT_INCOME = {
-    "my_income": 100000.0, "Spouse_income": 100000.0,
-    "my_emp_ret": 5.0,     "my_vol_ret": 0.0,
-    "Spouse_emp_ret": 5.0, "Spouse_vol_ret": 0.0,
-    "my_apy_pct": 10.0,    "Spouse_apy_pct": 10.0,
-    "years": 1,
+    "my_income":      100000.0,
+    "Spouse_income":  100000.0,
+    "my_emp_ret":     5.0,
+    "my_vol_ret":     0.0,
+    "Spouse_emp_ret": 5.0,
+    "Spouse_vol_ret": 0.0,
+    "years":          1,
 }
+
+# Savings account defaults (separate from income dict for clarity)
+DEFAULT_SAVINGS = {
+    "my_sav_mode":        "% of my gross",   # input mode
+    "my_sav_value":       10.0,              # amount in chosen mode
+    "my_sav_yield":       3.3,               # annual yield %
+    "spouse_sav_mode":    "% of my gross",
+    "spouse_sav_value":   10.0,
+    "spouse_sav_yield":   3.3,
+}
+
+SAV_MODES = ["$ amount", "% of my gross", "% of combined gross"]
 
 DEFAULT_EXPENSES = {
     "insurance": {
@@ -103,16 +126,19 @@ CHART_COLORS = ["#2196F3", "#4CAF50", "#FF9800", "#9C27B0", "#F44336", "#00BCD4"
 def income_key(k):       return f"w_inc__{k}"
 def expense_key(cat, k): return f"w_exp__{cat}__{k}"
 def custom_key(name):    return f"w_custom__{name}"
+def sav_key(k):          return f"w_sav__{k}"
 
 # ─────────────────────────────────────────────
 # SESSION STATE BOOTSTRAP
 # ─────────────────────────────────────────────
 if "_bootstrapped" not in st.session_state:
-    st.session_state._bootstrapped = True
+    st.session_state._bootstrapped  = True
     st.session_state.custom_services = {}
-    st.session_state._load_success = False
+    st.session_state._load_success   = False
     for k, v in DEFAULT_INCOME.items():
         st.session_state[income_key(k)] = v
+    for k, v in DEFAULT_SAVINGS.items():
+        st.session_state[sav_key(k)] = v
     for cat, items in DEFAULT_EXPENSES.items():
         for k, v in items.items():
             st.session_state[expense_key(cat, k)] = v
@@ -122,6 +148,7 @@ if "_bootstrapped" not in st.session_state:
 # ─────────────────────────────────────────────
 def apply_load(raw: str):
     data = json.loads(raw)
+
     rates = data.get("rates", {})
     for k, default in DEFAULT_INCOME.items():
         raw_val = rates.get(k, default)
@@ -130,6 +157,18 @@ def apply_load(raw: str):
         except (ValueError, TypeError):
             v = default
         st.session_state[income_key(k)] = v
+
+    savings = data.get("savings", {})
+    for k, default in DEFAULT_SAVINGS.items():
+        raw_val = savings.get(k, default)
+        if k in ("my_sav_mode", "spouse_sav_mode"):
+            v = raw_val if raw_val in SAV_MODES else default
+        else:
+            try:
+                v = float(raw_val)
+            except (ValueError, TypeError):
+                v = default
+        st.session_state[sav_key(k)] = v
 
     saved_exp = data.get("expenses", {})
     for cat, items in DEFAULT_EXPENSES.items():
@@ -154,18 +193,40 @@ def apply_load(raw: str):
     st.session_state._load_success = True
 
 def build_save_payload() -> str:
-    rates    = {k: st.session_state.get(income_key(k), DEFAULT_INCOME[k]) for k in DEFAULT_INCOME}
+    rates   = {k: st.session_state.get(income_key(k), DEFAULT_INCOME[k])   for k in DEFAULT_INCOME}
+    savings = {k: st.session_state.get(sav_key(k),    DEFAULT_SAVINGS[k])  for k in DEFAULT_SAVINGS}
     expenses = {cat: {k: st.session_state.get(expense_key(cat, k), 0.0) for k in items}
                 for cat, items in DEFAULT_EXPENSES.items()}
-    custom   = {n: st.session_state.get(custom_key(n), 0.0) for n in st.session_state.custom_services}
-    return json.dumps({"rates": rates, "expenses": expenses, "custom_services": custom}, indent=4)
+    custom  = {n: st.session_state.get(custom_key(n), 0.0) for n in st.session_state.custom_services}
+    return json.dumps({"rates": rates, "savings": savings,
+                        "expenses": expenses, "custom_services": custom}, indent=4)
+
+# ─────────────────────────────────────────────
+# SAVINGS DEPOSIT RESOLVER
+# Converts whatever input mode the user chose → monthly $ deposit
+# ─────────────────────────────────────────────
+def resolve_sav_deposit(who: str, my_gross_monthly: float,
+                         spouse_gross_monthly: float) -> float:
+    """Return monthly savings deposit in $ for 'my' or 'spouse'."""
+    mode  = st.session_state.get(sav_key(f"{who}_sav_mode"),  "% of my gross")
+    value = float(st.session_state.get(sav_key(f"{who}_sav_value"), 0) or 0)
+    combined_monthly = my_gross_monthly + spouse_gross_monthly
+    own_monthly = my_gross_monthly if who == "my" else spouse_gross_monthly
+
+    if mode == "$ amount":
+        return value
+    elif mode == "% of my gross":
+        return own_monthly * (value / 100)
+    else:  # % of combined gross
+        return combined_monthly * (value / 100)
 
 # ─────────────────────────────────────────────
 # CALCULATION ENGINE
 # ─────────────────────────────────────────────
 def calculate() -> dict:
-    def gi(k):       return float(st.session_state.get(income_key(k),       0) or 0)
-    def ge(cat, k):  return float(st.session_state.get(expense_key(cat, k), 0) or 0)
+    def gi(k):      return float(st.session_state.get(income_key(k),       0) or 0)
+    def ge(cat, k): return float(st.session_state.get(expense_key(cat, k), 0) or 0)
+    def gs(k):      return float(st.session_state.get(sav_key(k),          0) or 0)
 
     my_gross_annual      = gi("my_income")
     spouse_gross_annual  = gi("Spouse_income")
@@ -173,7 +234,7 @@ def calculate() -> dict:
     my_gross_monthly     = my_gross_annual  / 12
     spouse_gross_monthly = spouse_gross_annual / 12
 
-    my_ret_rate     = (gi("my_emp_ret") + gi("my_vol_ret"))     / 100
+    my_ret_rate     = (gi("my_emp_ret") + gi("my_vol_ret"))         / 100
     spouse_ret_rate = (gi("Spouse_emp_ret") + gi("Spouse_vol_ret")) / 100
     my_ret_monthly     = my_gross_monthly     * my_ret_rate
     spouse_ret_monthly = spouse_gross_monthly * spouse_ret_rate
@@ -198,25 +259,31 @@ def calculate() -> dict:
     monthly_tax      = total_annual_tax / 12
     eff_rate         = (total_annual_tax / total_gross_annual * 100) if total_gross_annual else 0
 
-    my_apy_dep     = my_gross_monthly     * (gi("my_apy_pct")     / 100)
-    spouse_apy_dep = spouse_gross_monthly * (gi("Spouse_apy_pct") / 100)
+    # Savings account deposits (resolved from flexible input mode)
+    my_sav_dep     = resolve_sav_deposit("my",     my_gross_monthly, spouse_gross_monthly)
+    spouse_sav_dep = resolve_sav_deposit("spouse", my_gross_monthly, spouse_gross_monthly)
+
+    # Per-account yield rates
+    my_sav_yield     = gs("my_sav_yield")     / 100
+    spouse_sav_yield = gs("spouse_sav_yield") / 100
     years = max(1, int(gi("years")))
 
-    # Month-by-month APY growth series
-    r = APY_RATE / 12
-    total_months = years * 12
-    months       = list(range(1, total_months + 1))
-    my_balance, spouse_balance, combined_balance = [], [], []
-    mb = sb = 0.0
-    for m in months:
-        mb = mb * (1 + r) + my_apy_dep
-        sb = sb * (1 + r) + spouse_apy_dep
-        my_balance.append(mb)
-        spouse_balance.append(sb)
-        combined_balance.append(mb + sb)
+    def fv_series(pmt, annual_yield, n_years):
+        """Month-by-month compounding, returns list of end-of-month balances."""
+        r = annual_yield / 12
+        bal = 0.0
+        series = []
+        for _ in range(n_years * 12):
+            bal = bal * (1 + r) + pmt
+            series.append(bal)
+        return series
 
-    my_apy_fv     = my_balance[-1]     if my_balance     else 0.0
-    spouse_apy_fv = spouse_balance[-1] if spouse_balance else 0.0
+    my_series     = fv_series(my_sav_dep,     my_sav_yield,     years)
+    spouse_series = fv_series(spouse_sav_dep, spouse_sav_yield, years)
+    combined_series = [a + b for a, b in zip(my_series, spouse_series)]
+
+    my_sav_fv     = my_series[-1]     if my_series     else 0.0
+    spouse_sav_fv = spouse_series[-1] if spouse_series else 0.0
 
     # Expense aggregation
     pie_data = {}
@@ -230,49 +297,44 @@ def calculate() -> dict:
         pie_data[label] = cat_sum
         total_monthly_expenses += cat_sum
 
-    total_savings = my_ret_monthly + spouse_ret_monthly + my_apy_dep + spouse_apy_dep
+    total_savings = my_ret_monthly + spouse_ret_monthly + my_sav_dep + spouse_sav_dep
     monthly_disc  = (my_gross_monthly + spouse_gross_monthly) - monthly_tax - total_savings - total_monthly_expenses
 
-    # Income waterfall segments (monthly $)
-    total_monthly_gross = my_gross_monthly + spouse_gross_monthly
     waterfall = {
-        "Taxes":       monthly_tax,
-        "Retirement":  my_ret_monthly + spouse_ret_monthly,
-        "APY Savings": my_apy_dep + spouse_apy_dep,
+        "Taxes":              monthly_tax,
+        "Retirement":         my_ret_monthly + spouse_ret_monthly,
+        "Savings / Invest.":  my_sav_dep + spouse_sav_dep,
         **{k: v for k, v in pie_data.items() if v > 0},
-        "Discretionary": max(0, monthly_disc),
+        "Discretionary":      max(0, monthly_disc),
     }
 
-    # Retirement contributions vs IRS limit
-    my_annual_ret     = my_ret_monthly     * 12
-    spouse_annual_ret = spouse_ret_monthly * 12
-
     return {
-        # KPIs
-        "monthly_disc":       monthly_disc,
-        "my_ret_monthly":     my_ret_monthly,
-        "spouse_ret_monthly": spouse_ret_monthly,
-        "total_monthly_exp":  total_monthly_expenses,
-        "fed_tax_monthly":    fed_tax / 12,
-        "my_fica_monthly":    my_fica / 12,
-        "spouse_fica_monthly":spouse_fica / 12,
-        "eff_rate":           eff_rate,
-        "my_apy_fv":          my_apy_fv,
-        "spouse_apy_fv":      spouse_apy_fv,
-        "combined_apy":       my_apy_fv + spouse_apy_fv,
-        # Chart data
-        "pie_data":           pie_data,
-        "months":             months,
-        "my_balance":         my_balance,
-        "spouse_balance":     spouse_balance,
-        "combined_balance":   combined_balance,
-        "waterfall":          waterfall,
-        "total_monthly_gross":total_monthly_gross,
-        "my_annual_ret":      my_annual_ret,
-        "spouse_annual_ret":  spouse_annual_ret,
-        "my_apy_dep":         my_apy_dep,
-        "spouse_apy_dep":     spouse_apy_dep,
-        "years":              years,
+        "monthly_disc":        monthly_disc,
+        "my_ret_monthly":      my_ret_monthly,
+        "spouse_ret_monthly":  spouse_ret_monthly,
+        "total_monthly_exp":   total_monthly_expenses,
+        "fed_tax_monthly":     fed_tax / 12,
+        "my_fica_monthly":     my_fica / 12,
+        "spouse_fica_monthly": spouse_fica / 12,
+        "eff_rate":            eff_rate,
+        "my_sav_fv":           my_sav_fv,
+        "spouse_sav_fv":       spouse_sav_fv,
+        "combined_sav":        my_sav_fv + spouse_sav_fv,
+        "my_sav_dep":          my_sav_dep,
+        "spouse_sav_dep":      spouse_sav_dep,
+        "my_sav_yield":        my_sav_yield,
+        "spouse_sav_yield":    spouse_sav_yield,
+        "my_series":           my_series,
+        "spouse_series":       spouse_series,
+        "combined_series":     combined_series,
+        "pie_data":            pie_data,
+        "waterfall":           waterfall,
+        "total_monthly_gross": my_gross_monthly + spouse_gross_monthly,
+        "my_annual_ret":       my_ret_monthly * 12,
+        "spouse_annual_ret":   spouse_ret_monthly * 12,
+        "years":               years,
+        "my_gross_monthly":    my_gross_monthly,
+        "spouse_gross_monthly":spouse_gross_monthly,
     }
 
 # ─────────────────────────────────────────────
@@ -290,67 +352,58 @@ def chart_expense_pie(res):
     if not pie_data:
         return None
     fig = go.Figure(go.Pie(
-        labels=list(pie_data.keys()),
-        values=list(pie_data.values()),
+        labels=list(pie_data.keys()), values=list(pie_data.values()),
         hole=0.38, textinfo="label+percent", textfont_size=12,
         marker=dict(colors=CHART_COLORS, line=dict(color="white", width=2)),
         hovertemplate="<b>%{label}</b><br>$%{value:,.2f}/mo<extra></extra>",
     ))
-    fig.update_layout(**LAYOUT_BASE,
-        height=420,
+    fig.update_layout(**LAYOUT_BASE, height=420,
         title=dict(text="Monthly Expense Breakdown", font_size=15, x=0.5),
         legend=dict(orientation="h", yanchor="bottom", y=-0.22, xanchor="center", x=0.5),
     )
     return fig
 
 def chart_savings_growth(res, display_years):
-    my_apy_dep     = res["my_apy_dep"]
-    spouse_apy_dep = res["spouse_apy_dep"]
-    if my_apy_dep == 0 and spouse_apy_dep == 0:
+    my_dep     = res["my_sav_dep"]
+    spouse_dep = res["spouse_sav_dep"]
+    if my_dep == 0 and spouse_dep == 0:
         return None
 
-    # Build month-by-month series for display_years (independent of APY target field)
-    r = APY_RATE / 12
-    total_months = display_years * 12
-    months = list(range(1, total_months + 1))
-    x = [m / 12 for m in months]
-    mb = sb = 0.0
-    my_bal, sp_bal, co_bal = [], [], []
-    for _ in months:
-        mb = mb * (1 + r) + my_apy_dep
-        sb = sb * (1 + r) + spouse_apy_dep
-        my_bal.append(mb)
-        sp_bal.append(sb)
-        co_bal.append(mb + sb)
+    my_yield     = res["my_sav_yield"]
+    spouse_yield = res["spouse_sav_yield"]
+
+    def fv_series(pmt, annual_yield, n_years):
+        r = annual_yield / 12
+        bal, series = 0.0, []
+        for _ in range(n_years * 12):
+            bal = bal * (1 + r) + pmt
+            series.append(bal)
+        return series
+
+    my_bal  = fv_series(my_dep,     my_yield,     display_years)
+    sp_bal  = fv_series(spouse_dep, spouse_yield, display_years)
+    co_bal  = [a + b for a, b in zip(my_bal, sp_bal)]
+    x       = [m / 12 for m in range(1, display_years * 12 + 1)]
+
+    my_yield_pct     = my_yield     * 100
+    spouse_yield_pct = spouse_yield * 100
 
     fig = go.Figure()
+    fig.add_trace(go.Scatter(x=x, y=my_bal, name=f"Your Acct ({my_yield_pct:.1f}%)",
+        mode="lines", line=dict(color="#2196F3", width=2),
+        hovertemplate="Year %{x:.1f}<br>$%{y:,.0f}<extra>Your Acct</extra>"))
+    fig.add_trace(go.Scatter(x=x, y=sp_bal, name=f"Spouse's Acct ({spouse_yield_pct:.1f}%)",
+        mode="lines", line=dict(color="#9C27B0", width=2),
+        hovertemplate="Year %{x:.1f}<br>$%{y:,.0f}<extra>Spouse Acct</extra>"))
+    fig.add_trace(go.Scatter(x=x, y=co_bal, name="Combined",
+        mode="lines", line=dict(color="#4CAF50", width=3, dash="dot"),
+        hovertemplate="Year %{x:.1f}<br>$%{y:,.0f}<extra>Combined</extra>"))
     fig.add_trace(go.Scatter(
-        x=x, y=my_bal,
-        name="Your APY", mode="lines",
-        line=dict(color="#2196F3", width=2),
-        hovertemplate="Year %{x:.1f}<br>$%{y:,.0f}<extra>Your APY</extra>",
-    ))
-    fig.add_trace(go.Scatter(
-        x=x, y=sp_bal,
-        name="Spouse's APY", mode="lines",
-        line=dict(color="#9C27B0", width=2),
-        hovertemplate="Year %{x:.1f}<br>$%{y:,.0f}<extra>Spouse APY</extra>",
-    ))
-    fig.add_trace(go.Scatter(
-        x=x, y=co_bal,
-        name="Combined", mode="lines",
-        line=dict(color="#4CAF50", width=3, dash="dot"),
-        hovertemplate="Year %{x:.1f}<br>$%{y:,.0f}<extra>Combined</extra>",
-    ))
-    fig.add_trace(go.Scatter(
-        x=x + x[::-1],
-        y=co_bal + [0] * len(x),
+        x=x + x[::-1], y=co_bal + [0]*len(x),
         fill="toself", fillcolor="rgba(76,175,80,0.07)",
-        line=dict(color="rgba(0,0,0,0)"), showlegend=False, hoverinfo="skip",
-    ))
-    fig.update_layout(**LAYOUT_BASE,
-        height=420,
-        title=dict(text=f"APY Savings Growth Over {display_years} Year(s) @ {APY_RATE*100:.1f}%", font_size=15, x=0.5),
+        line=dict(color="rgba(0,0,0,0)"), showlegend=False, hoverinfo="skip"))
+    fig.update_layout(**LAYOUT_BASE, height=420,
+        title=dict(text=f"Savings / Investment Account Growth Over {display_years} Year(s)", font_size=15, x=0.5),
         xaxis=dict(title="Years", gridcolor="#eee", zeroline=False),
         yaxis=dict(title="Balance ($)", tickprefix="$", tickformat=",.0f", gridcolor="#eee"),
         legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5),
@@ -359,25 +412,20 @@ def chart_savings_growth(res, display_years):
     return fig
 
 def chart_income_waterfall(res):
-    wf      = res["waterfall"]
-    labels  = list(wf.keys())
-    values  = list(wf.values())
-    total   = res["total_monthly_gross"]
+    wf     = res["waterfall"]
+    labels = list(wf.keys())
+    values = list(wf.values())
+    total  = res["total_monthly_gross"]
+    if total == 0:
+        return None
 
-    colors = [
-        "#e74c3c",   # Taxes
-        "#e67e22",   # Retirement
-        "#2196F3",   # APY Savings
-        "#9C27B0", "#00BCD4", "#FF9800", "#795548", "#607D8B",  # expense cats
-        "#27ae60",   # Discretionary (last)
-    ]
-    bar_colors = (colors[:3] + CHART_COLORS[:max(0, len(labels)-4)] + [colors[-1]])[:len(labels)]
-
+    fixed_colors = ["#e74c3c", "#e67e22", "#00897b"]
+    mid_colors   = CHART_COLORS[:max(0, len(labels) - 4)]
+    bar_colors   = (fixed_colors + mid_colors + ["#27ae60"])[:len(labels)]
     pcts = [v / total * 100 if total else 0 for v in values]
 
     fig = go.Figure(go.Bar(
-        x=values, y=labels,
-        orientation="h",
+        x=values, y=labels, orientation="h",
         marker_color=bar_colors,
         text=[f"${v:,.0f}  ({p:.1f}%)" for v, p in zip(values, pcts)],
         textposition="outside",
@@ -393,28 +441,28 @@ def chart_income_waterfall(res):
     return fig
 
 def chart_cashflow(res):
-    gross  = res["total_monthly_gross"]
-    tax    = res["fed_tax_monthly"] + res["my_fica_monthly"] + res["spouse_fica_monthly"]
-    ret    = res["my_ret_monthly"] + res["spouse_ret_monthly"]
-    apy    = res["my_apy_dep"] + res["spouse_apy_dep"]
-    bills  = res["total_monthly_exp"]
-    disc   = res["monthly_disc"]
+    gross = res["total_monthly_gross"]
+    if gross == 0:
+        return None
+    tax   = res["fed_tax_monthly"] + res["my_fica_monthly"] + res["spouse_fica_monthly"]
+    ret   = res["my_ret_monthly"]  + res["spouse_ret_monthly"]
+    sav   = res["my_sav_dep"]      + res["spouse_sav_dep"]
+    bills = res["total_monthly_exp"]
+    disc  = res["monthly_disc"]
 
-    cats   = ["Gross Income", "Taxes", "Retirement", "APY Savings", "Bills", "Discretionary"]
-    vals   = [gross, -tax, -ret, -apy, -bills, disc]
-    clrs   = ["#27ae60", "#e74c3c", "#e67e22", "#2196F3", "#9C27B0",
-               "#27ae60" if disc >= 0 else "#e74c3c"]
+    cats = ["Gross Income", "Taxes", "Retirement", "Savings / Invest.", "Bills", "Discretionary"]
+    vals = [gross, -tax, -ret, -sav, -bills, disc]
+    clrs = ["#27ae60", "#e74c3c", "#e67e22", "#00897b", "#9C27B0",
+            "#27ae60" if disc >= 0 else "#e74c3c"]
 
     fig = go.Figure(go.Bar(
-        x=cats, y=vals,
-        marker_color=clrs,
+        x=cats, y=vals, marker_color=clrs,
         text=[f"${abs(v):,.0f}" for v in vals],
         textposition="outside",
         hovertemplate="<b>%{x}</b><br>$%{y:,.2f}<extra></extra>",
     ))
     fig.add_hline(y=0, line_color="#333", line_width=1)
-    fig.update_layout(**LAYOUT_BASE,
-        height=420,
+    fig.update_layout(**LAYOUT_BASE, height=420,
         title=dict(text="Monthly Cash Flow", font_size=15, x=0.5),
         xaxis=dict(gridcolor="#eee"),
         yaxis=dict(title="$ / Month", tickprefix="$", tickformat=",.0f", gridcolor="#eee"),
@@ -423,16 +471,13 @@ def chart_cashflow(res):
     return fig
 
 def chart_retirement_gauge(res):
-    my_contrib    = res["my_annual_ret"]
-    spouse_contrib= res["spouse_annual_ret"]
-    limit         = IRS_401K_LIMIT
-
+    limit = IRS_401K_LIMIT
     fig = make_subplots(
         rows=1, cols=2,
         subplot_titles=("Your 401(k) vs IRS Limit", "Spouse's 401(k) vs IRS Limit"),
         specs=[[{"type": "indicator"}, {"type": "indicator"}]],
     )
-    for col, val, name in [(1, my_contrib, "You"), (2, spouse_contrib, "Spouse")]:
+    for col, val, name in [(1, res["my_annual_ret"], "You"), (2, res["spouse_annual_ret"], "Spouse")]:
         pct = min(val / limit * 100, 100) if limit else 0
         fig.add_trace(go.Indicator(
             mode="gauge+number+delta",
@@ -444,18 +489,16 @@ def chart_retirement_gauge(res):
                 "axis": {"range": [0, limit], "tickprefix": "$", "tickformat": ",.0f"},
                 "bar":  {"color": "#27ae60" if pct < 80 else "#e67e22" if pct < 100 else "#e74c3c"},
                 "steps": [
-                    {"range": [0, limit * 0.5],  "color": "#e8f5e9"},
-                    {"range": [limit * 0.5, limit * 0.8], "color": "#fff9c4"},
-                    {"range": [limit * 0.8, limit], "color": "#ffebee"},
+                    {"range": [0,             limit * 0.5], "color": "#e8f5e9"},
+                    {"range": [limit * 0.5,   limit * 0.8], "color": "#fff9c4"},
+                    {"range": [limit * 0.8,   limit],       "color": "#ffebee"},
                 ],
                 "threshold": {"line": {"color": "#c0392b", "width": 3},
                               "thickness": 0.85, "value": limit},
             },
             title={"text": f"{name}<br><span style='font-size:11px'>IRS limit ${limit:,}</span>"},
         ), row=1, col=col)
-
-    fig.update_layout(**LAYOUT_BASE,
-        height=340,
+    fig.update_layout(**LAYOUT_BASE, height=340,
         title=dict(text="Annual Retirement Contributions vs IRS Limit", font_size=15, x=0.5),
     )
     return fig
@@ -474,8 +517,7 @@ def tax_card(rows):
     inner = "".join(
         f'<div class="tax-row"><span class="tax-label">{l}</span>'
         f'<span class="tax-value">{v}</span></div>'
-        for l, v in rows
-    )
+        for l, v in rows)
     st.markdown(f'<div class="tax-card">{inner}</div>', unsafe_allow_html=True)
 
 def expense_section(category, title):
@@ -485,8 +527,44 @@ def expense_section(category, title):
         cols = st.columns(2)
         for j, key in enumerate(items[i: i + 2]):
             with cols[j]:
-                st.number_input(key, min_value=0.0, step=1.0,
-                                key=expense_key(category, key))
+                st.number_input(key, min_value=0.0, step=1.0, key=expense_key(category, key))
+
+def savings_input_block(who: str, label: str):
+    """Render the savings account input block for one person."""
+    st.markdown(f'<div class="sub-header">💰 {label}</div>', unsafe_allow_html=True)
+
+    mode_key  = sav_key(f"{who}_sav_mode")
+    val_key   = sav_key(f"{who}_sav_value")
+    yield_key = sav_key(f"{who}_sav_yield")
+
+    current_mode = st.session_state.get(mode_key, "% of my gross")
+    mode_idx = SAV_MODES.index(current_mode) if current_mode in SAV_MODES else 1
+
+    col_mode, col_val, col_yield = st.columns([2, 1.5, 1.5])
+
+    with col_mode:
+        st.radio(
+            "Contribution input as",
+            options=SAV_MODES,
+            index=mode_idx,
+            key=mode_key,
+            horizontal=True,
+            label_visibility="visible",
+        )
+
+    selected_mode = st.session_state.get(mode_key, "% of my gross")
+
+    with col_val:
+        if selected_mode == "$ amount":
+            st.number_input("Monthly Contribution ($)",
+                            min_value=0.0, step=50.0, key=val_key)
+        else:
+            st.number_input("Contribution (%)",
+                            min_value=0.0, max_value=100.0, step=0.5, key=val_key)
+
+    with col_yield:
+        st.number_input("Annual Yield (%)",
+                        min_value=0.0, max_value=50.0, step=0.1, key=yield_key)
 
 def show_chart(fig, empty_msg="Enter data to see this chart."):
     if fig:
@@ -497,7 +575,7 @@ def show_chart(fig, empty_msg="Enter data to see this chart."):
 # ─────────────────────────────────────────────
 # TITLE & FILE CONTROLS
 # ─────────────────────────────────────────────
-st.title("📊 Interactive Budgeting & APY Tool")
+st.title("📊 Interactive Budget Tool")
 
 hdr_l, hdr_r = st.columns([3, 1])
 with hdr_r:
@@ -524,21 +602,33 @@ left_col, right_col = st.columns([2, 3], gap="large")
 # LEFT — inputs
 # ══════════════════════════════════════════
 with left_col:
-    st.markdown('<div class="section-header">💰 Income & Savings Rates</div>', unsafe_allow_html=True)
+
+    # ── Income & Retirement ──────────────────
+    st.markdown('<div class="section-header">💰 Income & Retirement</div>', unsafe_allow_html=True)
     c1, c2 = st.columns(2)
     with c1:
         st.number_input("Your Gross Annual Income ($)",  min_value=0.0, step=1000.0, key=income_key("my_income"))
         st.number_input("Your Employee Ret. (%)",        min_value=0.0, max_value=100.0, step=0.5, key=income_key("my_emp_ret"))
         st.number_input("Your Voluntary Ret. (%)",       min_value=0.0, max_value=100.0, step=0.5, key=income_key("my_vol_ret"))
-        st.number_input("Your APY Alloc. (%)",           min_value=0.0, max_value=100.0, step=0.5, key=income_key("my_apy_pct"))
     with c2:
         st.number_input("Spouse's Gross Annual Income ($)", min_value=0.0, step=1000.0, key=income_key("Spouse_income"))
         st.number_input("Spouse's Employee Ret. (%)",       min_value=0.0, max_value=100.0, step=0.5, key=income_key("Spouse_emp_ret"))
         st.number_input("Spouse's Voluntary Ret. (%)",      min_value=0.0, max_value=100.0, step=0.5, key=income_key("Spouse_vol_ret"))
-        st.number_input("Spouse's APY Alloc. (%)",          min_value=0.0, max_value=100.0, step=0.5, key=income_key("Spouse_apy_pct"))
-    st.number_input("Year Target for APY (#)", min_value=1, max_value=50, step=1, key=income_key("years"))
+
+    st.number_input("Savings Account Year Target (#)", min_value=1, max_value=50, step=1,
+                    key=income_key("years"),
+                    help="Used as the default view for the savings growth chart.")
 
     st.markdown("<div class='thin-divider'></div>", unsafe_allow_html=True)
+
+    # ── Savings / Investment Accounts ────────
+    st.markdown('<div class="section-header">🏦 Savings / Investment Accounts</div>', unsafe_allow_html=True)
+    savings_input_block("my",     "Your Account")
+    savings_input_block("spouse", "Spouse's Account")
+
+    st.markdown("<div class='thin-divider'></div>", unsafe_allow_html=True)
+
+    # ── Expenses ────────────────────────────
     expense_section("insurance", "🛡️ Insurance")
     st.markdown("<div class='thin-divider'></div>", unsafe_allow_html=True)
     expense_section("housing",   "🏠 Housing")
@@ -572,24 +662,23 @@ with left_col:
 with right_col:
     res = calculate()
 
-    # ── KPI row ──────────────────────────────
     st.markdown('<div class="section-header">📊 Budget Dashboard</div>', unsafe_allow_html=True)
 
+    # ── KPI cards ────────────────────────────
     k1, k2, k3, k4 = st.columns(4)
     disc = res["monthly_disc"]
-    with k1: result_card("💵 Discretionary/mo", f"${disc:,.0f}",
+    with k1: result_card("💵 Discretionary/mo",  f"${disc:,.0f}",
                          "green" if disc >= 0 else "red", "" if disc >= 0 else "red")
-    with k2: result_card("📈 Monthly Bills",   f"${res['total_monthly_exp']:,.0f}", "dark", "gray")
-    with k3: result_card("🏦 Combined APY",    f"${res['combined_apy']:,.0f}", "blue", "blue")
-    with k4: result_card("📊 Tax Rate",        f"{res['eff_rate']:.1f}%", "dark", "gray")
+    with k2: result_card("📈 Monthly Bills",      f"${res['total_monthly_exp']:,.0f}", "dark",  "gray")
+    with k3: result_card("🏦 Combined Savings",   f"${res['combined_sav']:,.0f}",      "teal",  "teal")
+    with k4: result_card("📊 Tax Rate",           f"{res['eff_rate']:.1f}%",           "dark",  "gray")
 
     t1, t2, t3, t4 = st.columns(4)
-    with t1: result_card("🧑 Your Ret./mo",     f"${res['my_ret_monthly']:,.0f}",    "dark", "gray")
-    with t2: result_card("👫 Spouse Ret./mo",   f"${res['spouse_ret_monthly']:,.0f}", "dark", "gray")
-    with t3: result_card("📆 Your APY Target",  f"${res['my_apy_fv']:,.0f}",         "blue", "blue")
-    with t4: result_card("📆 Spouse APY Target",f"${res['spouse_apy_fv']:,.0f}",     "blue", "blue")
+    with t1: result_card("🧑 Your Ret./mo",         f"${res['my_ret_monthly']:,.0f}",   "dark", "gray")
+    with t2: result_card("👫 Spouse Ret./mo",        f"${res['spouse_ret_monthly']:,.0f}","dark","gray")
+    with t3: result_card("💰 Your Savings Target",   f"${res['my_sav_fv']:,.0f}",       "teal", "teal")
+    with t4: result_card("💰 Spouse Savings Target", f"${res['spouse_sav_fv']:,.0f}",   "teal", "teal")
 
-    # Tax detail (collapsed by default to save space)
     with st.expander("📋 Monthly Tax Breakdown"):
         tax_card([
             ("• Federal Income Tax",  f"${res['fed_tax_monthly']:,.2f}"),
@@ -600,7 +689,7 @@ with right_col:
 
     st.markdown("<div class='thin-divider'></div>", unsafe_allow_html=True)
 
-    # ── Tabbed charts ─────────────────────────
+    # ── Tabs ─────────────────────────────────
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "🥧 Expense Breakdown",
         "📈 Savings Growth",
@@ -610,29 +699,25 @@ with right_col:
     ])
 
     with tab1:
-        show_chart(chart_expense_pie(res),
-                   "Enter non-zero expenses to see the breakdown.")
+        show_chart(chart_expense_pie(res), "Enter non-zero expenses to see the breakdown.")
 
     with tab2:
-        slider_col, _ = st.columns([2, 1])
-        with slider_col:
+        sl_col, _ = st.columns([2, 1])
+        with sl_col:
             display_years = st.slider(
-                "📅 View savings growth over (years)",
+                "📅 View growth over (years)",
                 min_value=1, max_value=40,
                 value=max(res["years"], 1),
                 step=1, key="growth_slider",
             )
         show_chart(chart_savings_growth(res, display_years),
-                   "Enter APY allocation percentages to see growth.")
+                   "Enter savings contributions and yield to see growth.")
 
     with tab3:
-        show_chart(chart_income_waterfall(res),
-                   "Enter income and expenses to see the waterfall.")
+        show_chart(chart_income_waterfall(res), "Enter income and expenses to see the waterfall.")
 
     with tab4:
-        show_chart(chart_cashflow(res),
-                   "Enter income and expenses to see cash flow.")
+        show_chart(chart_cashflow(res), "Enter income and expenses to see cash flow.")
 
     with tab5:
-        show_chart(chart_retirement_gauge(res),
-                   "Enter retirement percentages to see contribution gauges.")
+        show_chart(chart_retirement_gauge(res), "Enter retirement percentages to see contribution gauges.")
