@@ -589,10 +589,15 @@ with hdr_r:
                        width='stretch')
     uploaded = st.file_uploader("📁 Load Profile", type="json", label_visibility="collapsed")
     if uploaded is not None:
-        try:
-            apply_load(uploaded.read().decode())
-        except Exception as e:
-            st.error(f"Could not parse file: {e}")
+        # Fingerprint by name+size so we only call apply_load once per unique file,
+        # not on every rerun while the uploader still holds the file.
+        fingerprint = f"{uploaded.name}__{uploaded.size}"
+        if st.session_state.get("_last_loaded_file") != fingerprint:
+            st.session_state["_last_loaded_file"] = fingerprint
+            try:
+                apply_load(uploaded.read().decode())
+            except Exception as e:
+                st.error(f"Could not parse file: {e}")
 
 if st.session_state.get("_load_success"):
     st.success("✅ Profile loaded successfully!")
