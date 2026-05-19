@@ -279,7 +279,6 @@ def calculate() -> dict:
 # CHART BUILDERS
 # ─────────────────────────────────────────────
 LAYOUT_BASE = dict(
-    height=400,
     margin=dict(t=50, b=40, l=10, r=10),
     paper_bgcolor="rgba(0,0,0,0)",
     plot_bgcolor="rgba(0,0,0,0)",
@@ -298,47 +297,60 @@ def chart_expense_pie(res):
         hovertemplate="<b>%{label}</b><br>$%{value:,.2f}/mo<extra></extra>",
     ))
     fig.update_layout(**LAYOUT_BASE,
+        height=420,
         title=dict(text="Monthly Expense Breakdown", font_size=15, x=0.5),
         legend=dict(orientation="h", yanchor="bottom", y=-0.22, xanchor="center", x=0.5),
     )
     return fig
 
-def chart_savings_growth(res):
-    months = res["months"]
-    if not months:
+def chart_savings_growth(res, display_years):
+    my_apy_dep     = res["my_apy_dep"]
+    spouse_apy_dep = res["spouse_apy_dep"]
+    if my_apy_dep == 0 and spouse_apy_dep == 0:
         return None
 
-    # X-axis as year fractions for readability
+    # Build month-by-month series for display_years (independent of APY target field)
+    r = APY_RATE / 12
+    total_months = display_years * 12
+    months = list(range(1, total_months + 1))
     x = [m / 12 for m in months]
+    mb = sb = 0.0
+    my_bal, sp_bal, co_bal = [], [], []
+    for _ in months:
+        mb = mb * (1 + r) + my_apy_dep
+        sb = sb * (1 + r) + spouse_apy_dep
+        my_bal.append(mb)
+        sp_bal.append(sb)
+        co_bal.append(mb + sb)
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=x, y=res["my_balance"],
+        x=x, y=my_bal,
         name="Your APY", mode="lines",
         line=dict(color="#2196F3", width=2),
         hovertemplate="Year %{x:.1f}<br>$%{y:,.0f}<extra>Your APY</extra>",
     ))
     fig.add_trace(go.Scatter(
-        x=x, y=res["spouse_balance"],
+        x=x, y=sp_bal,
         name="Spouse's APY", mode="lines",
         line=dict(color="#9C27B0", width=2),
         hovertemplate="Year %{x:.1f}<br>$%{y:,.0f}<extra>Spouse APY</extra>",
     ))
     fig.add_trace(go.Scatter(
-        x=x, y=res["combined_balance"],
+        x=x, y=co_bal,
         name="Combined", mode="lines",
         line=dict(color="#4CAF50", width=3, dash="dot"),
         hovertemplate="Year %{x:.1f}<br>$%{y:,.0f}<extra>Combined</extra>",
     ))
-    # Shade area under combined
     fig.add_trace(go.Scatter(
         x=x + x[::-1],
-        y=res["combined_balance"] + [0] * len(x),
+        y=co_bal + [0] * len(x),
         fill="toself", fillcolor="rgba(76,175,80,0.07)",
         line=dict(color="rgba(0,0,0,0)"), showlegend=False, hoverinfo="skip",
     ))
     fig.update_layout(**LAYOUT_BASE,
-        title=dict(text=f"APY Savings Growth Over {res['years']} Year(s) @ {APY_RATE*100:.1f}%", font_size=15, x=0.5),
+        height=420,
+        title=dict(text=f"APY Savings Growth Over {display_years} Year(s) @ {APY_RATE*100:.1f}%", font_size=15, x=0.5),
         xaxis=dict(title="Years", gridcolor="#eee", zeroline=False),
         yaxis=dict(title="Balance ($)", tickprefix="$", tickformat=",.0f", gridcolor="#eee"),
         legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5),
@@ -402,6 +414,7 @@ def chart_cashflow(res):
     ))
     fig.add_hline(y=0, line_color="#333", line_width=1)
     fig.update_layout(**LAYOUT_BASE,
+        height=420,
         title=dict(text="Monthly Cash Flow", font_size=15, x=0.5),
         xaxis=dict(gridcolor="#eee"),
         yaxis=dict(title="$ / Month", tickprefix="$", tickformat=",.0f", gridcolor="#eee"),
@@ -442,7 +455,7 @@ def chart_retirement_gauge(res):
         ), row=1, col=col)
 
     fig.update_layout(**LAYOUT_BASE,
-        height=320,
+        height=340,
         title=dict(text="Annual Retirement Contributions vs IRS Limit", font_size=15, x=0.5),
     )
     return fig
@@ -477,7 +490,7 @@ def expense_section(category, title):
 
 def show_chart(fig, empty_msg="Enter data to see this chart."):
     if fig:
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     else:
         st.info(empty_msg)
 
@@ -490,7 +503,7 @@ hdr_l, hdr_r = st.columns([3, 1])
 with hdr_r:
     st.download_button("💾 Save Profile", data=build_save_payload(),
                        file_name="budget_data.json", mime="application/json",
-                       use_container_width=True)
+                       width='stretch')
     uploaded = st.file_uploader("📁 Load Profile", type="json", label_visibility="collapsed")
     if uploaded is not None:
         try:
@@ -601,7 +614,15 @@ with right_col:
                    "Enter non-zero expenses to see the breakdown.")
 
     with tab2:
-        show_chart(chart_savings_growth(res),
+        slider_col, _ = st.columns([2, 1])
+        with slider_col:
+            display_years = st.slider(
+                "📅 View savings growth over (years)",
+                min_value=1, max_value=40,
+                value=max(res["years"], 1),
+                step=1, key="growth_slider",
+            )
+        show_chart(chart_savings_growth(res, display_years),
                    "Enter APY allocation percentages to see growth.")
 
     with tab3:
