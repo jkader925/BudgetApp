@@ -312,33 +312,56 @@ def calculate() -> dict:
         "Discretionary":      max(0, monthly_disc),
     }
 
+    # Monthly interest earned = interest on current balance at end of target period.
+    # We use month 12 balance (first full year) as a steady-state proxy for
+    # "monthly interest right now given current deposits", which is intuitive.
+    # Annual accrual = total interest earned over the full target period.
+    def interest_stats(series, pmt):
+        if not series:
+            return 0.0, 0.0
+        # Monthly interest at the 12-month mark (or last available month)
+        idx = min(11, len(series) - 1)
+        bal_prev = series[idx - 1] if idx > 0 else 0.0
+        monthly_interest = series[idx] - bal_prev - pmt
+        # Annual interest = final balance minus all contributions
+        total_contributions = pmt * len(series)
+        annual_interest = series[-1] - total_contributions
+        return max(0.0, monthly_interest), max(0.0, annual_interest)
+
+    my_mo_interest,     my_annual_interest     = interest_stats(my_series,     my_sav_dep)
+    spouse_mo_interest, spouse_annual_interest = interest_stats(spouse_series, spouse_sav_dep)
+
     return {
-        "monthly_disc":        monthly_disc,
-        "my_ret_monthly":      my_ret_monthly,
-        "spouse_ret_monthly":  spouse_ret_monthly,
-        "total_monthly_exp":   total_monthly_expenses,
-        "fed_tax_monthly":     fed_tax / 12,
-        "my_fica_monthly":     my_fica / 12,
-        "spouse_fica_monthly": spouse_fica / 12,
-        "eff_rate":            eff_rate,
-        "my_sav_fv":           my_sav_fv,
-        "spouse_sav_fv":       spouse_sav_fv,
-        "combined_sav":        my_sav_fv + spouse_sav_fv,
-        "my_sav_dep":          my_sav_dep,
-        "spouse_sav_dep":      spouse_sav_dep,
-        "my_sav_yield":        my_sav_yield,
-        "spouse_sav_yield":    spouse_sav_yield,
-        "my_series":           my_series,
-        "spouse_series":       spouse_series,
-        "combined_series":     combined_series,
-        "pie_data":            pie_data,
-        "waterfall":           waterfall,
-        "total_monthly_gross": my_gross_monthly + spouse_gross_monthly,
-        "my_annual_ret":       my_ret_monthly * 12,
-        "spouse_annual_ret":   spouse_ret_monthly * 12,
-        "years":               years,
-        "my_gross_monthly":    my_gross_monthly,
-        "spouse_gross_monthly":spouse_gross_monthly,
+        "monthly_disc":            monthly_disc,
+        "my_ret_monthly":          my_ret_monthly,
+        "spouse_ret_monthly":      spouse_ret_monthly,
+        "total_monthly_exp":       total_monthly_expenses,
+        "fed_tax_monthly":         fed_tax / 12,
+        "my_fica_monthly":         my_fica / 12,
+        "spouse_fica_monthly":     spouse_fica / 12,
+        "eff_rate":                eff_rate,
+        "my_sav_fv":               my_sav_fv,
+        "spouse_sav_fv":           spouse_sav_fv,
+        "combined_sav":            my_sav_fv + spouse_sav_fv,
+        "my_sav_dep":              my_sav_dep,
+        "spouse_sav_dep":          spouse_sav_dep,
+        "my_sav_yield":            my_sav_yield,
+        "spouse_sav_yield":        spouse_sav_yield,
+        "my_mo_interest":          my_mo_interest,
+        "spouse_mo_interest":      spouse_mo_interest,
+        "my_annual_interest":      my_annual_interest,
+        "spouse_annual_interest":  spouse_annual_interest,
+        "my_series":               my_series,
+        "spouse_series":           spouse_series,
+        "combined_series":         combined_series,
+        "pie_data":                pie_data,
+        "waterfall":               waterfall,
+        "total_monthly_gross":     my_gross_monthly + spouse_gross_monthly,
+        "my_annual_ret":           my_ret_monthly * 12,
+        "spouse_annual_ret":       spouse_ret_monthly * 12,
+        "years":                   years,
+        "my_gross_monthly":        my_gross_monthly,
+        "spouse_gross_monthly":    spouse_gross_monthly,
     }
 
 # ─────────────────────────────────────────────
@@ -695,6 +718,38 @@ with right_col:
             ("• Your FICA Tax",       f"${res['my_fica_monthly']:,.2f}"),
             ("• Spouse's FICA Tax",   f"${res['spouse_fica_monthly']:,.2f}"),
             ("• Effective Tax Rate",  f"{res['eff_rate']:.1f}%"),
+        ])
+
+    with st.expander("🏦 Savings Account Detail"):
+        sa1, sa2 = st.columns(2)
+        with sa1:
+            st.markdown("**🧑 Your Account**")
+            tax_card([
+                ("Monthly contribution",    f"${res['my_sav_dep']:,.2f}"),
+                ("Monthly interest earned", f"${res['my_mo_interest']:,.2f}"),
+                ("Annual interest accrual", f"${res['my_annual_interest']:,.2f}"),
+                (f"Balance at {res['years']} yr(s)",
+                                            f"${res['my_sav_fv']:,.2f}"),
+            ])
+        with sa2:
+            st.markdown("**👫 Spouse's Account**")
+            tax_card([
+                ("Monthly contribution",    f"${res['spouse_sav_dep']:,.2f}"),
+                ("Monthly interest earned", f"${res['spouse_mo_interest']:,.2f}"),
+                ("Annual interest accrual", f"${res['spouse_annual_interest']:,.2f}"),
+                (f"Balance at {res['years']} yr(s)",
+                                            f"${res['spouse_sav_fv']:,.2f}"),
+            ])
+        st.markdown("")
+        tax_card([
+            ("Combined monthly contributions",
+             f"${res['my_sav_dep'] + res['spouse_sav_dep']:,.2f}"),
+            ("Combined monthly interest",
+             f"${res['my_mo_interest'] + res['spouse_mo_interest']:,.2f}"),
+            ("Combined annual interest accrual",
+             f"${res['my_annual_interest'] + res['spouse_annual_interest']:,.2f}"),
+            (f"Combined balance at {res['years']} yr(s)",
+             f"${res['combined_sav']:,.2f}"),
         ])
 
     st.markdown("<div class='thin-divider'></div>", unsafe_allow_html=True)
