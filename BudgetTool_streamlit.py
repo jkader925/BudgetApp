@@ -15,17 +15,28 @@ st.markdown("""
 <style>
     .block-container { padding-top: 1.5rem; padding-bottom: 1rem; }
 
-    /* ── Scrollable left panel ── */
-    .scroll-panel {
-        height: calc(100vh - 160px);
+    /* ── Independent column scrolling ──
+       Streamlit wraps each column in a div[data-testid="stVerticalBlock"].
+       We target the first one (left panel) via its parent column container.
+       The key insight: set height on the column's inner block, not the column itself. */
+    div[data-testid="stHorizontalBlock"] > div:first-child {
+        position: sticky;
+        top: 0;
+        height: calc(100vh - 130px);
         overflow-y: auto;
         overflow-x: hidden;
-        padding-right: 10px;
+        padding-right: 6px;
         border-right: 1px solid #e8e8e8;
+    }
+    /* Right column: also scrollable but not sticky — grows naturally */
+    div[data-testid="stHorizontalBlock"] > div:last-child {
+        height: calc(100vh - 130px);
+        overflow-y: auto;
+        overflow-x: hidden;
     }
     /* ── Chat panel ── */
     .chat-history-box {
-        height: 260px;
+        height: 240px;
         overflow-y: auto;
         border: 1px solid #e0e0e0;
         border-radius: 8px;
@@ -768,14 +779,17 @@ def savings_input_block(who, label):
 # ─────────────────────────────────────────────
 # TITLE & FILE CONTROLS  (outside columns — full width)
 # ─────────────────────────────────────────────
-st.title("📊 Interactive Budget Tool")
-
-hdr_l, hdr_r = st.columns([3, 1])
-with hdr_r:
-    st.download_button("💾 Save Profile", data=build_save_payload(),
+title_col, save_col, load_col = st.columns([4, 1, 1])
+with title_col:
+    st.title("📊 Interactive Budget Tool")
+with save_col:
+    st.markdown("<div style='margin-top:14px'></div>", unsafe_allow_html=True)
+    st.download_button("💾 Save", data=build_save_payload(),
                        file_name="budget_data.json", mime="application/json",
                        width='stretch')
-    uploaded = st.file_uploader("📁 Load Profile", type="json", label_visibility="collapsed")
+with load_col:
+    st.markdown("<div style='margin-top:14px'></div>", unsafe_allow_html=True)
+    uploaded = st.file_uploader("Load", type="json", label_visibility="collapsed")
     if uploaded is not None:
         fingerprint = f"{uploaded.name}__{uploaded.size}"
         if st.session_state.get("_last_loaded_file") != fingerprint:
@@ -798,7 +812,6 @@ left_col, right_col = st.columns([2, 3], gap="large")
 # LEFT — scrollable input panel
 # ══════════════════════════════════════════════
 with left_col:
-    st.markdown('<div class="scroll-panel">', unsafe_allow_html=True)
     # Income & Retirement
     st.markdown('<div class="section-header">💰 Income & Retirement</div>', unsafe_allow_html=True)
     c1, c2 = st.columns(2)
@@ -834,7 +847,6 @@ with left_col:
     for cat in DEFAULT_EXPENSES:
         expense_section(cat, CATEGORY_LABELS[cat])
         st.markdown("<div class='thin-divider'></div>", unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)  # close scroll-panel
 
 # ══════════════════════════════════════════════
 # RIGHT — sticky dashboard
@@ -960,61 +972,6 @@ with right_col:
     with tab5:
         show_chart(chart_retirement_gauge(res), "Enter retirement percentages to see gauges.")
 
-    # ── Budget Assistant (always visible below charts) ────────────────────
-    st.markdown("<div class='thin-divider'></div>", unsafe_allow_html=True)
-    st.markdown('<div class="section-header">💬 Budget Assistant</div>',
-                unsafe_allow_html=True)
-    st.caption("Ask anything — I always see your current inputs and calculated values.")
-
-    # Render chat history as styled HTML bubbles (avoids st.chat_message tab bug)
-    history = st.session_state.chat_history
-    if history:
-        bubbles = ""
-        for turn in history:
-            if turn["role"] == "user":
-                bubbles += f'<div class="chat-bubble-user">🧑 {turn["content"]}</div>'
-            else:
-                # Convert newlines to <br> for HTML display
-                content = turn["content"].replace("\n", "<br>")
-                bubbles += f'<div class="chat-bubble-assistant">🤖 {content}</div>'
-        st.markdown(f'<div class="chat-history-box">{bubbles}</div>',
-                    unsafe_allow_html=True)
-    else:
-        st.markdown(
-            '<div class="chat-history-box">'
-            '<div class="chat-welcome">'
-            "👋 Ask me anything about your budget!<br><br>"
-            "<b>Try:</b> What is my effective savings rate? &nbsp;|&nbsp; "
-            "How much does raising retirement by 2% affect my discretionary? &nbsp;|&nbsp; "
-            "Which expense category is biggest?"
-            "</div></div>",
-            unsafe_allow_html=True,
-        )
-
-    # Input + Clear on same row using columns
-    inp_col, clr_col = st.columns([5, 1])
-    with inp_col:
-        user_input = st.text_input(
-            "Message", placeholder="Ask about your budget...",
-            label_visibility="collapsed",
-            value=st.session_state.get("_chat_input_value", ""),
-            key="chat_text_input",
-        )
-        # Sync value store with current widget content
-        st.session_state["_chat_input_value"] = user_input
-    with clr_col:
-        send_clicked = st.button("Send ➤", key="chat_send", use_container_width=True)
-    
-    clr_col2, _ = st.columns([1, 5])
-    with clr_col2:
-        if st.button("🗑️ Clear chat", key="chat_clear"):
-            st.session_state.chat_history = []
-            st.rerun()
-
-    # Trigger on Send button OR Enter (non-empty input)
-    if (send_clicked or user_input) and user_input.strip():
-        with st.spinner("Thinking..."):
-            send_chat_message(user_input.strip(), res)
-        # Flag the input to clear on next rerun (can't set widget key mid-run)
-        st.session_state._chat_clear_pending = True
-        st.rerun()
+    # ── Budget Assistant (temporarily disabled) ──────────────────────────
+    # st.markdown("<div class='thin-divider'></div>", unsafe_allow_html=True)
+    # st.info("💬 Budget Assistant — coming soon.")
