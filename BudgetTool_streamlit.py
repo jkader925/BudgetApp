@@ -2,6 +2,7 @@ import streamlit as st
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import json
+import requests
 
 st.set_page_config(page_title="Interactive Budget Tool", page_icon="📊", layout="wide")
 
@@ -139,9 +140,10 @@ def cptx_key(cat, name):  return f"w_cptx__{cat}__{name}"
 # SESSION STATE BOOTSTRAP
 # ─────────────────────────────────────────────
 if "_bootstrapped" not in st.session_state:
-    st.session_state._bootstrapped = True
-    st.session_state._load_success = False
-    st.session_state.custom_items  = {cat: {} for cat in DEFAULT_EXPENSES}
+    st.session_state._bootstrapped  = True
+    st.session_state._load_success   = False
+    st.session_state.custom_items    = {cat: {} for cat in DEFAULT_EXPENSES}
+    st.session_state.chat_history    = []   # [{role, content}]
     for k, v in DEFAULT_INCOME.items():
         st.session_state[income_key(k)] = v
     for k, v in DEFAULT_SAVINGS.items():
@@ -379,6 +381,95 @@ def calculate() -> dict:
         "years":                years,
     }
 
+
+# ─────────────────────────────────────────────
+# CHAT CONTEXT BUILDER
+# ─────────────────────────────────────────────
+def build_chat_context(res: dict) -> str:
+    """Serialize current inputs + calculated outputs into a compact context block."""
+    def gi(k): return st.session_state.get(income_key(k), 0)
+    def gs(k): return st.session_state.get(sav_key(k), 0)
+
+    # Expense snapshot
+    expense_lines = []
+    for cat, items in DEFAULT_EXPENSES.items():
+        label = CATEGORY_LABELS[cat]
+        for item in items:
+            val = st.session_state.get(expense_key(cat, item), 0)
+            if val:
+                expense_lines.append(f"  {label} / {item}: ${val:,.2f}/mo")
+        for name, meta in st.session_state.custom_items.get(cat, {}).items():
+            val = st.session_state.get(cval_key(cat, name), 0)
+            ptx = st.session_state.get(cptx_key(cat, name), False)
+            if val:
+                expense_lines.append(
+                    f"  {label} / {name}: ${val:,.2f}/mo{'  [PRE-TAX]' if ptx else ''}")
+
+    ctx = f"""
+=== CURRENT BUDGET SNAPSHOT ===
+
+INCOME
+  Your gross annual:          ${gi('my_income'):>12,.2f}
+  Spouse gross annual:        ${gi('Spouse_income'):>12,.2f}
+  Combined gross monthly:     ${res['total_gross_monthly']:>12,.2f}
+  Combined after-tax monthly: ${res['after_tax_monthly']:>12,.2f}
+  Effective tax rate:         {res['eff_rate']:.1f}%
+
+RETIREMENT (monthly contributions)
+  Your contribution:          ${res['my_ret_mo']:>12,.2f}  ({gi('my_emp_ret')+gi('my_vol_ret'):.1f}% of your gross)
+  Spouse contribution:        ${res['spouse_ret_mo']:>12,.2f}  ({gi('Spouse_emp_ret')+gi('Spouse_vol_ret'):.1f}% of spouse gross)
+  Combined:                   ${res['combined_ret_mo']:>12,.2f}
+  IRS 401(k) limit/person:    ${IRS_401K_LIMIT:>12,}
+  Your headroom remaining:    ${max(0, IRS_401K_LIMIT - res['my_annual_ret']):>12,.2f}
+  Spouse headroom remaining:  ${max(0, IRS_401K_LIMIT - res['spouse_annual_ret']):>12,.2f}
+
+SAVINGS / INVESTMENT ACCOUNTS
+  Your mode:                  {gs('my_sav_mode')}
+  Your monthly deposit:       ${res['my_sav_dep']:>12,.2f}
+  Your annual yield:          {res['my_sav_yield']*100:.1f}%
+  Your monthly interest:      ${res['my_mo_int']:>12,.2f}
+  Your {res['years']}-year balance:      ${res['my_sav_fv']:>12,.2f}
+  Spouse mode:                {gs('spouse_sav_mode')}
+  Spouse monthly deposit:     ${res['spouse_sav_dep']:>12,.2f}
+  Spouse annual yield:        {res['spouse_sav_yield']*100:.1f}%
+  Spouse monthly interest:    ${res['spouse_mo_int']:>12,.2f}
+  Spouse {res['years']}-year balance:    ${res['spouse_sav_fv']:>12,.2f}
+  Combined {res['years']}-year balance:  ${res['combined_sav_fv']:>12,.2f}
+
+MONTHLY EXPENSES (non-zero only)
+{chr(10).join(expense_lines) if expense_lines else "  (none entered)"}
+  TOTAL:                      ${res['total_monthly_exp']:>12,.2f}
+
+TAX BREAKDOWN (monthly)
+  Federal income tax:         ${res['fed_tax_monthly']:>12,.2f}
+  Your FICA:                  ${res['my_fica_monthly']:>12,.2f}
+  Spouse FICA:                ${res['spouse_fica_monthly']:>12,.2f}
+  Pre-tax custom deductions:  ${res['pretax_custom_mo']:>12,.2f}
+
+SUMMARY
+  Total monthly outflows:     ${res['total_gross_monthly'] - res['monthly_disc']:>12,.2f}
+  Monthly remaining:          ${res['monthly_disc']:>12,.2f}  {'✅ surplus' if res['monthly_disc'] >= 0 else '⚠️ SHORTFALL'}
+================================
+"""
+    return ctx.strip()
+
+
+SYSTEM_PROMPT = """You are a friendly, knowledgeable financial assistant embedded inside a household budgeting tool. At the start of every message you receive a live snapshot of the user's current budget inputs and calculated outputs. Use these numbers directly when answering — never ask the user to re-state values you can already see.
+
+Your job:
+• Answer questions about the user's specific budget (taxes, savings, retirement, expenses, discretionary income, what-if scenarios).
+• Explain financial concepts clearly (effective vs marginal tax rate, compound interest, 401k limits, FICA, etc.).
+• Point out things the user might want to pay attention to (e.g. shortfall, low savings rate, 401k headroom, pre-tax opportunities).
+• Give concrete numbers when helpful (e.g. "if you raise your retirement % by 2%, your monthly discretionary drops by ~$X").
+
+Guidelines:
+• Be concise. Bullet points are fine for multi-part answers.
+• Don't give personalized investment advice or make specific stock/fund recommendations.
+• If asked about realistic return assumptions, the long-run S&P 500 average is ~10% nominal, ~7% real (inflation-adjusted). 14%+ is optimistic for long-term planning.
+• The tool uses 2025 US federal tax brackets, $30,000 standard deduction (married filing jointly), and a $176,100 Social Security wage base.
+• Always refer to the live snapshot numbers rather than making up values."""
+
+
 # ─────────────────────────────────────────────
 # CHART BUILDERS
 # ─────────────────────────────────────────────
@@ -512,6 +603,42 @@ def chart_retirement_gauge(res):
     fig.update_layout(**LAYOUT_BASE, height=340,
         title=dict(text="Annual Retirement Contributions vs IRS Limit", font_size=15, x=0.5))
     return fig
+
+
+def send_chat_message(user_msg: str, res: dict):
+    """Call Anthropic API with full budget context + conversation history."""
+    context = build_chat_context(res)
+    # Prepend fresh context to the user turn
+    augmented_user = f"[BUDGET SNAPSHOT — auto-attached]\n{context}\n\n[USER QUESTION]\n{user_msg}"
+
+    messages = []
+    # Include prior turns (use original user text, not augmented, for prior turns)
+    for turn in st.session_state.chat_history:
+        messages.append({"role": turn["role"], "content": turn["content"]})
+    messages.append({"role": "user", "content": augmented_user})
+
+    try:
+        resp = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={"Content-Type": "application/json"},
+            json={
+                "model":      "claude-sonnet-4-20250514",
+                "max_tokens": 1024,
+                "system":     SYSTEM_PROMPT,
+                "messages":   messages,
+            },
+            timeout=60,
+        )
+        resp.raise_for_status()
+        data        = resp.json()
+        reply       = data["content"][0]["text"]
+        # Store original user text (not augmented) + assistant reply
+        st.session_state.chat_history.append({"role": "user",      "content": user_msg})
+        st.session_state.chat_history.append({"role": "assistant", "content": reply})
+        return reply
+    except Exception as e:
+        return f"⚠️ API error: {e}"
+
 
 # ─────────────────────────────────────────────
 # UI HELPERS
@@ -785,9 +912,10 @@ with right_col:
     st.markdown("<div class='thin-divider'></div>", unsafe_allow_html=True)
 
     # ── Charts ────────────────────────────────
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "🥧 Expense Breakdown", "📈 Savings Growth",
-        "💧 Income Waterfall",  "📊 Cash Flow", "🎯 Retirement Limits",
+        "💧 Income Waterfall",  "📊 Cash Flow",
+        "🎯 Retirement Limits", "💬 Budget Assistant",
     ])
     with tab1:
         show_chart(chart_expense_pie(res), "Enter non-zero expenses to see breakdown.")
@@ -804,3 +932,45 @@ with right_col:
         show_chart(chart_cashflow(res), "Enter income and expenses to see cash flow.")
     with tab5:
         show_chart(chart_retirement_gauge(res), "Enter retirement percentages to see gauges.")
+
+    with tab6:
+        st.markdown("**💬 Budget Assistant**")
+        st.caption(
+            "Ask anything about your budget. The assistant always sees your current "
+            "inputs and calculated values — no need to repeat numbers."
+        )
+
+        # ── Conversation history display ──────────
+        chat_container = st.container()
+        with chat_container:
+            if not st.session_state.chat_history:
+                st.info(
+                    "👋 Hi! I can see all your current budget inputs and outputs. "
+                    "Try asking things like:\n"
+                    "• *What's my effective savings rate?*\n"
+                    "• *How much would my discretionary change if I raised retirement to 8%?*\n"
+                    "• *Am I on track for retirement?*\n"
+                    "• *Which expense category is my biggest?*"
+                )
+            for turn in st.session_state.chat_history:
+                if turn["role"] == "user":
+                    with st.chat_message("user"):
+                        st.markdown(turn["content"])
+                else:
+                    with st.chat_message("assistant"):
+                        st.markdown(turn["content"])
+
+        # ── Input row ─────────────────────────────
+        col_input, col_clear = st.columns([5, 1])
+        with col_input:
+            user_input = st.chat_input("Ask about your budget...", key="chat_input")
+        with col_clear:
+            st.markdown("<div style='margin-top:8px'></div>", unsafe_allow_html=True)
+            if st.button("🗑️ Clear", key="chat_clear", help="Clear conversation history"):
+                st.session_state.chat_history = []
+                st.rerun()
+
+        if user_input:
+            with st.spinner("Thinking..."):
+                send_chat_message(user_input, res)
+            st.rerun()
