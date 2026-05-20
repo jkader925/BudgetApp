@@ -162,7 +162,8 @@ if "_bootstrapped" not in st.session_state:
     st.session_state._bootstrapped  = True
     st.session_state._load_success   = False
     st.session_state.custom_items    = {cat: {} for cat in DEFAULT_EXPENSES}
-    st.session_state.chat_history    = []   # [{role, content}]
+    st.session_state.chat_history       = []   # [{role, content}]
+    st.session_state._chat_clear_pending  = False
     for k, v in DEFAULT_INCOME.items():
         st.session_state[income_key(k)] = v
     for k, v in DEFAULT_SAVINGS.items():
@@ -170,6 +171,11 @@ if "_bootstrapped" not in st.session_state:
     for cat, items in DEFAULT_EXPENSES.items():
         for k, v in items.items():
             st.session_state[expense_key(cat, k)] = v
+
+# Clear chat input on the rerun AFTER send (before the widget renders)
+if st.session_state.get("_chat_clear_pending"):
+    st.session_state["_chat_input_value"] = ""
+    st.session_state._chat_clear_pending  = False
 
 # ─────────────────────────────────────────────
 # LOAD / SAVE
@@ -990,8 +996,12 @@ with right_col:
     with inp_col:
         user_input = st.text_input(
             "Message", placeholder="Ask about your budget...",
-            label_visibility="collapsed", key="chat_text_input"
+            label_visibility="collapsed",
+            value=st.session_state.get("_chat_input_value", ""),
+            key="chat_text_input",
         )
+        # Sync value store with current widget content
+        st.session_state["_chat_input_value"] = user_input
     with clr_col:
         send_clicked = st.button("Send ➤", key="chat_send", use_container_width=True)
     
@@ -1005,6 +1015,6 @@ with right_col:
     if (send_clicked or user_input) and user_input.strip():
         with st.spinner("Thinking..."):
             send_chat_message(user_input.strip(), res)
-        # Clear the input by resetting its key
-        st.session_state["chat_text_input"] = ""
+        # Flag the input to clear on next rerun (can't set widget key mid-run)
+        st.session_state._chat_clear_pending = True
         st.rerun()
