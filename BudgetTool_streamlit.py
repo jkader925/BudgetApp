@@ -15,18 +15,37 @@ st.markdown("""
 <style>
     .block-container { padding-top: 1.5rem; padding-bottom: 1rem; }
 
-    /* ── Sticky right column ── */
-    /* The left input panel scrolls; right dashboard stays fixed in viewport */
-    [data-testid="column"]:nth-child(1) {
+    /* ── Scrollable left panel ── */
+    .scroll-panel {
+        height: calc(100vh - 160px);
         overflow-y: auto;
-        max-height: calc(100vh - 120px);
-        padding-right: 8px;
+        overflow-x: hidden;
+        padding-right: 10px;
+        border-right: 1px solid #e8e8e8;
     }
-    [data-testid="column"]:nth-child(2) {
-        position: sticky;
-        top: 70px;
-        max-height: calc(100vh - 120px);
+    /* ── Chat panel ── */
+    .chat-history-box {
+        height: 260px;
         overflow-y: auto;
+        border: 1px solid #e0e0e0;
+        border-radius: 8px;
+        padding: 10px;
+        background: #fafafa;
+        margin-bottom: 8px;
+    }
+    .chat-bubble-user {
+        background: #e3f2fd; border-radius: 12px 12px 3px 12px;
+        padding: 8px 12px; margin: 6px 0 6px 20%; font-size: 0.88rem;
+        color: #1a237e;
+    }
+    .chat-bubble-assistant {
+        background: #f1f8e9; border-radius: 12px 12px 12px 3px;
+        padding: 8px 12px; margin: 6px 20% 6px 0; font-size: 0.88rem;
+        color: #1b5e20;
+    }
+    .chat-welcome {
+        color: #888; font-size: 0.82rem; text-align: center;
+        padding: 20px 10px; font-style: italic;
     }
 
     .section-header {
@@ -620,7 +639,7 @@ def send_chat_message(user_msg: str, res: dict):
     try:
         resp = requests.post(
             "https://api.anthropic.com/v1/messages",
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "x-api-key": ""},
             json={
                 "model":      "claude-sonnet-4-20250514",
                 "max_tokens": 1024,
@@ -773,6 +792,7 @@ left_col, right_col = st.columns([2, 3], gap="large")
 # LEFT — scrollable input panel
 # ══════════════════════════════════════════════
 with left_col:
+    st.markdown('<div class="scroll-panel">', unsafe_allow_html=True)
     # Income & Retirement
     st.markdown('<div class="section-header">💰 Income & Retirement</div>', unsafe_allow_html=True)
     c1, c2 = st.columns(2)
@@ -808,6 +828,7 @@ with left_col:
     for cat in DEFAULT_EXPENSES:
         expense_section(cat, CATEGORY_LABELS[cat])
         st.markdown("<div class='thin-divider'></div>", unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)  # close scroll-panel
 
 # ══════════════════════════════════════════════
 # RIGHT — sticky dashboard
@@ -912,10 +933,10 @@ with right_col:
     st.markdown("<div class='thin-divider'></div>", unsafe_allow_html=True)
 
     # ── Charts ────────────────────────────────
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "🥧 Expense Breakdown", "📈 Savings Growth",
         "💧 Income Waterfall",  "📊 Cash Flow",
-        "🎯 Retirement Limits", "💬 Budget Assistant",
+        "🎯 Retirement Limits",
     ])
     with tab1:
         show_chart(chart_expense_pie(res), "Enter non-zero expenses to see breakdown.")
@@ -933,44 +954,57 @@ with right_col:
     with tab5:
         show_chart(chart_retirement_gauge(res), "Enter retirement percentages to see gauges.")
 
-    with tab6:
-        st.markdown("**💬 Budget Assistant**")
-        st.caption(
-            "Ask anything about your budget. The assistant always sees your current "
-            "inputs and calculated values — no need to repeat numbers."
+    # ── Budget Assistant (always visible below charts) ────────────────────
+    st.markdown("<div class='thin-divider'></div>", unsafe_allow_html=True)
+    st.markdown('<div class="section-header">💬 Budget Assistant</div>',
+                unsafe_allow_html=True)
+    st.caption("Ask anything — I always see your current inputs and calculated values.")
+
+    # Render chat history as styled HTML bubbles (avoids st.chat_message tab bug)
+    history = st.session_state.chat_history
+    if history:
+        bubbles = ""
+        for turn in history:
+            if turn["role"] == "user":
+                bubbles += f'<div class="chat-bubble-user">🧑 {turn["content"]}</div>'
+            else:
+                # Convert newlines to <br> for HTML display
+                content = turn["content"].replace("\n", "<br>")
+                bubbles += f'<div class="chat-bubble-assistant">🤖 {content}</div>'
+        st.markdown(f'<div class="chat-history-box">{bubbles}</div>',
+                    unsafe_allow_html=True)
+    else:
+        st.markdown(
+            '<div class="chat-history-box">'
+            '<div class="chat-welcome">'
+            "👋 Ask me anything about your budget!<br><br>"
+            "<b>Try:</b> What is my effective savings rate? &nbsp;|&nbsp; "
+            "How much does raising retirement by 2% affect my discretionary? &nbsp;|&nbsp; "
+            "Which expense category is biggest?"
+            "</div></div>",
+            unsafe_allow_html=True,
         )
 
-        # ── Conversation history display ──────────
-        chat_container = st.container()
-        with chat_container:
-            if not st.session_state.chat_history:
-                st.info(
-                    "👋 Hi! I can see all your current budget inputs and outputs. "
-                    "Try asking things like:\n"
-                    "• *What's my effective savings rate?*\n"
-                    "• *How much would my discretionary change if I raised retirement to 8%?*\n"
-                    "• *Am I on track for retirement?*\n"
-                    "• *Which expense category is my biggest?*"
-                )
-            for turn in st.session_state.chat_history:
-                if turn["role"] == "user":
-                    with st.chat_message("user"):
-                        st.markdown(turn["content"])
-                else:
-                    with st.chat_message("assistant"):
-                        st.markdown(turn["content"])
-
-        # ── Input row ─────────────────────────────
-        col_input, col_clear = st.columns([5, 1])
-        with col_input:
-            user_input = st.chat_input("Ask about your budget...", key="chat_input")
-        with col_clear:
-            st.markdown("<div style='margin-top:8px'></div>", unsafe_allow_html=True)
-            if st.button("🗑️ Clear", key="chat_clear", help="Clear conversation history"):
-                st.session_state.chat_history = []
-                st.rerun()
-
-        if user_input:
-            with st.spinner("Thinking..."):
-                send_chat_message(user_input, res)
+    # Input + Clear on same row using columns
+    inp_col, clr_col = st.columns([5, 1])
+    with inp_col:
+        user_input = st.text_input(
+            "Message", placeholder="Ask about your budget...",
+            label_visibility="collapsed", key="chat_text_input"
+        )
+    with clr_col:
+        send_clicked = st.button("Send ➤", key="chat_send", use_container_width=True)
+    
+    clr_col2, _ = st.columns([1, 5])
+    with clr_col2:
+        if st.button("🗑️ Clear chat", key="chat_clear"):
+            st.session_state.chat_history = []
             st.rerun()
+
+    # Trigger on Send button OR Enter (non-empty input)
+    if (send_clicked or user_input) and user_input.strip():
+        with st.spinner("Thinking..."):
+            send_chat_message(user_input.strip(), res)
+        # Clear the input by resetting its key
+        st.session_state["chat_text_input"] = ""
+        st.rerun()
