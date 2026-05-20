@@ -15,48 +15,18 @@ st.markdown("""
 <style>
     .block-container { padding-top: 1.5rem; padding-bottom: 1rem; }
 
-    /* ── Independent column scrolling ──
-       Streamlit wraps each column in a div[data-testid="stVerticalBlock"].
-       We target the first one (left panel) via its parent column container.
-       The key insight: set height on the column's inner block, not the column itself. */
-    div[data-testid="stHorizontalBlock"] > div:first-child {
+    /* ── Sticky right column ── */
+    /* The left input panel scrolls; right dashboard stays fixed in viewport */
+    [data-testid="column"]:nth-child(1) {
+        overflow-y: auto;
+        max-height: calc(100vh - 120px);
+        padding-right: 8px;
+    }
+    [data-testid="column"]:nth-child(2) {
         position: sticky;
-        top: 0;
-        height: calc(100vh - 130px);
+        top: 70px;
+        max-height: calc(100vh - 120px);
         overflow-y: auto;
-        overflow-x: hidden;
-        padding-right: 6px;
-        border-right: 1px solid #e8e8e8;
-    }
-    /* Right column: also scrollable but not sticky — grows naturally */
-    div[data-testid="stHorizontalBlock"] > div:last-child {
-        height: calc(100vh - 130px);
-        overflow-y: auto;
-        overflow-x: hidden;
-    }
-    /* ── Chat panel ── */
-    .chat-history-box {
-        height: 240px;
-        overflow-y: auto;
-        border: 1px solid #e0e0e0;
-        border-radius: 8px;
-        padding: 10px;
-        background: #fafafa;
-        margin-bottom: 8px;
-    }
-    .chat-bubble-user {
-        background: #e3f2fd; border-radius: 12px 12px 3px 12px;
-        padding: 8px 12px; margin: 6px 0 6px 20%; font-size: 0.88rem;
-        color: #1a237e;
-    }
-    .chat-bubble-assistant {
-        background: #f1f8e9; border-radius: 12px 12px 12px 3px;
-        padding: 8px 12px; margin: 6px 20% 6px 0; font-size: 0.88rem;
-        color: #1b5e20;
-    }
-    .chat-welcome {
-        color: #888; font-size: 0.82rem; text-align: center;
-        padding: 20px 10px; font-style: italic;
     }
 
     .section-header {
@@ -173,8 +143,7 @@ if "_bootstrapped" not in st.session_state:
     st.session_state._bootstrapped  = True
     st.session_state._load_success   = False
     st.session_state.custom_items    = {cat: {} for cat in DEFAULT_EXPENSES}
-    st.session_state.chat_history       = []   # [{role, content}]
-    st.session_state._chat_clear_pending  = False
+    st.session_state.chat_history    = []   # [{role, content}]
     for k, v in DEFAULT_INCOME.items():
         st.session_state[income_key(k)] = v
     for k, v in DEFAULT_SAVINGS.items():
@@ -182,11 +151,6 @@ if "_bootstrapped" not in st.session_state:
     for cat, items in DEFAULT_EXPENSES.items():
         for k, v in items.items():
             st.session_state[expense_key(cat, k)] = v
-
-# Clear chat input on the rerun AFTER send (before the widget renders)
-if st.session_state.get("_chat_clear_pending"):
-    st.session_state["_chat_input_value"] = ""
-    st.session_state._chat_clear_pending  = False
 
 # ─────────────────────────────────────────────
 # LOAD / SAVE
@@ -656,7 +620,7 @@ def send_chat_message(user_msg: str, res: dict):
     try:
         resp = requests.post(
             "https://api.anthropic.com/v1/messages",
-            headers={"Content-Type": "application/json", "x-api-key": ""},
+            headers={"Content-Type": "application/json"},
             json={
                 "model":      "claude-sonnet-4-20250514",
                 "max_tokens": 1024,
@@ -779,17 +743,14 @@ def savings_input_block(who, label):
 # ─────────────────────────────────────────────
 # TITLE & FILE CONTROLS  (outside columns — full width)
 # ─────────────────────────────────────────────
-title_col, save_col, load_col = st.columns([4, 1, 1])
-with title_col:
-    st.title("📊 Interactive Budget Tool")
-with save_col:
-    st.markdown("<div style='margin-top:14px'></div>", unsafe_allow_html=True)
-    st.download_button("💾 Save", data=build_save_payload(),
+st.title("📊 Interactive Budget Tool")
+
+hdr_l, hdr_r = st.columns([3, 1])
+with hdr_r:
+    st.download_button("💾 Save Profile", data=build_save_payload(),
                        file_name="budget_data.json", mime="application/json",
                        width='stretch')
-with load_col:
-    st.markdown("<div style='margin-top:14px'></div>", unsafe_allow_html=True)
-    uploaded = st.file_uploader("Load", type="json", label_visibility="collapsed")
+    uploaded = st.file_uploader("📁 Load Profile", type="json", label_visibility="collapsed")
     if uploaded is not None:
         fingerprint = f"{uploaded.name}__{uploaded.size}"
         if st.session_state.get("_last_loaded_file") != fingerprint:
@@ -951,10 +912,10 @@ with right_col:
     st.markdown("<div class='thin-divider'></div>", unsafe_allow_html=True)
 
     # ── Charts ────────────────────────────────
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "🥧 Expense Breakdown", "📈 Savings Growth",
         "💧 Income Waterfall",  "📊 Cash Flow",
-        "🎯 Retirement Limits",
+        "🎯 Retirement Limits", "💬 Budget Assistant",
     ])
     with tab1:
         show_chart(chart_expense_pie(res), "Enter non-zero expenses to see breakdown.")
@@ -972,6 +933,44 @@ with right_col:
     with tab5:
         show_chart(chart_retirement_gauge(res), "Enter retirement percentages to see gauges.")
 
-    # ── Budget Assistant (temporarily disabled) ──────────────────────────
-    # st.markdown("<div class='thin-divider'></div>", unsafe_allow_html=True)
-    # st.info("💬 Budget Assistant — coming soon.")
+    with tab6:
+        st.markdown("**💬 Budget Assistant**")
+        st.caption(
+            "Ask anything about your budget. The assistant always sees your current "
+            "inputs and calculated values — no need to repeat numbers."
+        )
+
+        # ── Conversation history display ──────────
+        chat_container = st.container()
+        with chat_container:
+            if not st.session_state.chat_history:
+                st.info(
+                    "👋 Hi! I can see all your current budget inputs and outputs. "
+                    "Try asking things like:\n"
+                    "• *What's my effective savings rate?*\n"
+                    "• *How much would my discretionary change if I raised retirement to 8%?*\n"
+                    "• *Am I on track for retirement?*\n"
+                    "• *Which expense category is my biggest?*"
+                )
+            for turn in st.session_state.chat_history:
+                if turn["role"] == "user":
+                    with st.chat_message("user"):
+                        st.markdown(turn["content"])
+                else:
+                    with st.chat_message("assistant"):
+                        st.markdown(turn["content"])
+
+        # ── Input row ─────────────────────────────
+        col_input, col_clear = st.columns([5, 1])
+        with col_input:
+            user_input = st.chat_input("Ask about your budget...", key="chat_input")
+        with col_clear:
+            st.markdown("<div style='margin-top:8px'></div>", unsafe_allow_html=True)
+            if st.button("🗑️ Clear", key="chat_clear", help="Clear conversation history"):
+                st.session_state.chat_history = []
+                st.rerun()
+
+        if user_input:
+            with st.spinner("Thinking..."):
+                send_chat_message(user_input, res)
+            st.rerun()
